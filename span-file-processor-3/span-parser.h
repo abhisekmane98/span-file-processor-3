@@ -8,6 +8,7 @@
 #include <sqlext.h>
 #include <sqltypes.h>
 #include <sql.h>
+#include <unordered_map>
 
 // Risk array structure from <ra>
 struct RiskArray {
@@ -50,13 +51,18 @@ struct SpanRecord {
     RiskArray riskArray;
 };
 
+using ConfigSection = std::unordered_map<std::string, std::string>;
+using ConfigMap = std::unordered_map<std::string, ConfigSection>;
 
+
+// File Reading
+bool readConnectionString(const std::string& filePath, std::wstring& connStr);
+ConfigMap loadTagConfigIni(const std::string& path);
 
 // Tag extractors and XML parsing
-bool readConnectionString(const std::string& filePath, std::wstring& connStr);
 std::string extractTag(const std::string& block, const std::string& tag);
-RiskArray extractRiskArray(const std::string& block);
-void parseSpanXmlBlock(const std::string& block, std::vector<SpanRecord>& recs);
+RiskArray extractRiskArray(const std::string& block, const ConfigMap& config);
+void parseSpanXmlBlock(const std::string& block, std::vector<SpanRecord>& recs, const ConfigMap& config);
 std::wstring joinRiskArray(RiskArray riskArray);
 
 // DB functions
@@ -64,7 +70,13 @@ bool connectToMSSQL(SQLHENV& hEnv, SQLHDBC& hDbc, const std::wstring& connStr);
 bool insertSpanRecords(SQLHDBC hDbc, const std::vector<SpanRecord>& records);
 void handleError(SQLSMALLINT handleType, SQLHANDLE handle, const char* functionName, int paramNumber = 0);
 
+double safeStod(const std::string& value, double defaultVal = 0.0);
+int safeStoi(const std::string& value, int defaultVal = 0);
+
+// printig & logging
 void printSpanRecords(const SpanRecord& records);
+void logConfigMap(const ConfigMap& config);
+
 
 
 #endif // SPAN_PARSER_H

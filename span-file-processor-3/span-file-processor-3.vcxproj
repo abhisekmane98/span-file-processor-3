@@ -137,6 +137,7 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="db-config.ini" />
+    <None Include="tags-config.ini" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

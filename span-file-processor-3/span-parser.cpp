@@ -14,7 +14,51 @@
 #include <sql.h>
 
 extern Logger logger;  // use the shared logger
+int phyCounter = 0;
+int futCounter = 0;
+int optCounter = 0;
 
+
+
+ConfigMap loadTagConfigIni(const std::string& path) {
+    std::ifstream file(path);
+    ConfigMap config;
+
+    if (!file.is_open())
+        return config;
+
+    std::string line, section;
+    while (std::getline(file, line)) {
+        if (line.empty() || line[0] == '#')
+            continue;
+
+        if (line[0] == '[' && line.back() == ']') {
+            section = line.substr(1, line.length() - 2);
+            continue;
+        }
+
+        size_t eq = line.find('=');
+        if (eq == std::string::npos)
+            continue;
+
+        std::string key = line.substr(0, eq);
+        std::string val = line.substr(eq + 1);
+        config[section][key] = val;
+    }
+
+    return config;
+}
+
+void logConfigMap(const ConfigMap& config) {
+    logger.log("===== Parsed Tag Configuration =====");
+
+    for (const auto& sectionPair : config) {
+        logger.log("[" + sectionPair.first + "]");
+        for (const auto& kv : sectionPair.second) {
+            logger.log(kv.first + " = " + kv.second);
+        }
+    }
+}
 
 bool readConnectionString(const std::string& filePath, std::wstring& connStr) {
     std::ifstream file(filePath);
@@ -61,133 +105,138 @@ std::string extractTag(const std::string& block, const std::string& tag) {
     return "";
 }
 
-RiskArray extractRiskArray(const std::string& block) {
+RiskArray extractRiskArray(const std::string& block, const ConfigMap& config) {
     RiskArray riskArray;
-    size_t raStart = block.find("<ra>");
-    size_t raEnd = block.find("</ra>");
-    if (raStart != std::string::npos && raEnd != std::string::npos && raEnd > raStart) {
-        std::string raContent = block.substr(raStart, raEnd - raStart + 5);
-        riskArray.r = std::stoi(extractTag(raContent, "r"));
-        riskArray.d = std::stod(extractTag(raContent, "d"));
-        size_t pos = 0;
 
-        while ((pos = raContent.find("<a>", pos)) != std::string::npos) {
-            size_t end = raContent.find("</a>", pos);
+    std::string raTag = config.at("risk_array").at("RISK_ARRAY_TAG");
+    size_t raStart = block.find("<" + raTag + ">");
+    size_t raEnd = block.find("</" + raTag + ">");
+    if (raStart != std::string::npos && raEnd != std::string::npos && raEnd > raStart) {
+        std::string raContent = block.substr(raStart, raEnd - raStart + raTag.length() + 3);
+
+        std::string rTag = config.at("risk_array").at("RISK_ARRAY_R");
+        std::string dTag = config.at("risk_array").at("RISK_ARRAY_D");
+        std::string aTag = config.at("risk_array").at("RISK_ARRAY_A");
+
+        riskArray.r = safeStoi(extractTag(raContent, rTag));
+        riskArray.d = safeStod(extractTag(raContent, dTag));
+
+        size_t pos = 0;
+        while ((pos = raContent.find("<" + aTag + ">", pos)) != std::string::npos) {
+            size_t end = raContent.find("</" + aTag + ">", pos);
             if (end == std::string::npos)
                 break;
-            std::string val = raContent.substr(pos + 3, end - pos - 3);
-            riskArray.a.push_back(std::stod(val));
-            pos = end + 4;
+            std::string val = raContent.substr(pos + aTag.length() + 2, end - pos - aTag.length() - 2);
+            riskArray.a.push_back(safeStod(val));
+            pos = end + aTag.length() + 3;
         }
     }
+
     return riskArray;
 }
 
-void parseSpanXmlBlock(const std::string& block, std::vector<SpanRecord>& recs) {
-    std::string segment;
-
-    if (block.find("<phyPf>") != std::string::npos)
-        segment = "phypf";
-    else if (block.find("<futPf>") != std::string::npos)
-        segment = "futpf";
-    else
-        segment = "oofpf";
-
-
-    // Common root-level tags
-    int pfId = std::stoi(extractTag(block, "pfId"));
-    std::string pfCode = extractTag(block, "pfCode");
-    std::string currency = extractTag(block, "currency");
-    double cvf = std::stod(extractTag(block, "cvf"));
-    std::string valueMeth = extractTag(block, "valueMeth");
-    std::string priceMeth = extractTag(block, "priceMeth");
-    std::string setlMeth = extractTag(block, "setlMeth");
-
+void parseSpanXmlBlock(const std::string& block, std::vector<SpanRecord>& recs, const ConfigMap& config) {
     SpanRecord rec;
-    rec.segment = segment;
-    rec.pfId = pfId;
-    rec.pfCode = pfCode;
-    rec.currency = currency;
-    rec.cvf = cvf;
-    rec.valueMeth = valueMeth;
-    rec.priceMeth = priceMeth;
-    rec.setlMeth = setlMeth;
 
-    if (segment == "phypf") {
+    std::string segment;
+    if (block.find(config.at("blocks").at("PHYPF_BLOCK_TAG")) != std::string::npos)
+        segment = config.at("blocks").at("PHYPF_BLOCK_TAG");
+    else if (block.find(config.at("blocks").at("FUTPF_BLOCK_TAG")) != std::string::npos)
+        segment = config.at("blocks").at("FUTPF_BLOCK_TAG");
+    else if (block.find(config.at("blocks").at("OOPF_BLOCK_TAG")) != std::string::npos)
+        segment = config.at("blocks").at("OOPF_BLOCK_TAG");
+
+    rec.segment = segment;
+
+    // Root-level fields
+    rec.pfId = safeStoi(extractTag(block, config.at("root_fields").at("PF_ID")));
+    rec.pfCode = extractTag(block, config.at("root_fields").at("PF_CODE"));
+    rec.currency = extractTag(block, config.at("root_fields").at("CURRENCY"));
+    rec.cvf = safeStod(extractTag(block, config.at("root_fields").at("CVF")));
+    rec.valueMeth = extractTag(block, config.at("root_fields").at("VALUE_METHOD"));
+    rec.priceMeth = extractTag(block, config.at("root_fields").at("PRICE_METHOD"));
+    rec.setlMeth = extractTag(block, config.at("root_fields").at("SETTLE_METHOD"));
+
+   
+    if (segment == config.at("blocks").at("PHYPF_BLOCK_TAG")) {
+        std::regex phyRgx("<" + config.at("contracts").at("PHYPF_TAG") + ">([\\s\\S]*?)</" + config.at("contracts").at("PHYPF_TAG") + ">");
         std::smatch m;
-        std::regex_search(block, m, std::regex("<phy>[\\s\\S]*?</phy>"));
+        std::regex_search(block, m, phyRgx);
         std::string phyBlock = m[0];
 
-        rec.contractId = std::stoi(extractTag(phyBlock, "cId"));
-        rec.expiry = extractTag(phyBlock, "pe");
-        rec.volatility = std::stod(extractTag(phyBlock, "v"));
-        rec.priceScan = std::stod(extractTag(phyBlock, "priceScan"));
-        rec.volScan = std::stod(extractTag(phyBlock, "volScan"));
-        rec.riskArray = extractRiskArray(phyBlock);
+        rec.contractId = safeStoi(extractTag(phyBlock, config.at("contract_fields").at("CONTRACT_ID")));
+        rec.expiry = extractTag(phyBlock, config.at("contract_fields").at("EXPIRY"));
+        rec.volatility = safeStod(extractTag(phyBlock, config.at("contract_fields").at("VOLATILITY")));
+        rec.priceScan = safeStod(extractTag(phyBlock, config.at("contract_fields").at("PRICE_SCAN")));
+        rec.volScan = safeStod(extractTag(phyBlock, config.at("contract_fields").at("VOL_SCAN")));
+        rec.riskArray = extractRiskArray(phyBlock, config);
 
+        phyCounter++;
         recs.push_back(rec);
     }
-    else if (rec.segment == "futpf") {
-        std::regex rgx("<fut>([\\s\\S]*?)</fut>");
-        auto futBegin = std::sregex_iterator(block.begin(), block.end(), rgx);
+    else if (segment == config.at("blocks").at("FUTPF_BLOCK_TAG")) {
+        std::regex futRgx("<" + config.at("contracts").at("FUTPF_TAG") + ">([\\s\\S]*?)</" + config.at("contracts").at("FUTPF_TAG") + ">");
+        auto futBegin = std::sregex_iterator(block.begin(), block.end(), futRgx);
         auto futEnd = std::sregex_iterator();
 
         for (auto it = futBegin; it != futEnd; ++it) {
             std::string fut = (*it)[0];
+            rec.contractId = safeStoi(extractTag(fut, config.at("contract_fields").at("CONTRACT_ID")));
+            rec.expiry = extractTag(fut, config.at("contract_fields").at("EXPIRY"));
+            rec.volatility = safeStod(extractTag(fut, config.at("contract_fields").at("VOLATILITY")));
+            rec.settleDate = extractTag(fut, config.at("contract_fields").at("SETTLE_DATE"));
 
-            rec.contractId = std::stoi(extractTag(fut, "cId"));
-            rec.expiry = extractTag(fut, "pe");
-            rec.volatility = std::stod(extractTag(fut, "v"));
-            rec.settleDate = extractTag(fut, "setlDate");
+            std::string intrBlock = extractTag(fut, config.at("interest_rate").at("INTRA_RATE_PARENT"));
+            rec.intraRate = safeStod(extractTag(intrBlock, config.at("interest_rate").at("INTRA_RATE_VALUE")));
 
-            //val two tags, choosing 2nd one
-            std::string intrBlock = extractTag(fut, "intrRate");
-            rec.intraRate = std::stod(extractTag(intrBlock, "val"));
+            rec.priceScan = safeStod(extractTag(fut, config.at("contract_fields").at("PRICE_SCAN")));
+            rec.volScan = safeStod(extractTag(fut, config.at("contract_fields").at("VOL_SCAN")));
+            rec.riskArray = extractRiskArray(fut, config);
 
-            rec.priceScan = std::stod(extractTag(fut, "priceScan"));
-            rec.volScan = std::stod(extractTag(fut, "volScan"));
-            rec.riskArray = extractRiskArray(fut);
-
+            futCounter++;
             recs.push_back(rec);
         }
-
     }
-    else if (segment == "oofpf") {
+    else if (segment == config.at("blocks").at("OOPF_BLOCK_TAG")) {    
+        rec.svf = safeStod(extractTag(block, config.at("root_fields").at("SVF")));
 
-        // Common root-level tags
-        rec.svf = std::stod(extractTag(block, "svf"));
-
-        std::regex seriesRgx("<series>([\\s\\S]*?)</series>");
+        std::regex seriesRgx("<" + config.at("contracts").at("OOPF_SERIES_TAG") + ">([\\s\\S]*?)</" + config.at("contracts").at("OOPF_SERIES_TAG") + ">");
         auto seriesBegin = std::sregex_iterator(block.begin(), block.end(), seriesRgx);
         auto seriesEnd = std::sregex_iterator();
 
         for (auto sit = seriesBegin; sit != seriesEnd; ++sit) {
+
             std::string series = (*sit)[0];
+            rec.contractId = safeStoi(extractTag(series, config.at("contract_fields").at("CONTRACT_ID")));
+            rec.expiry = extractTag(series, config.at("contract_fields").at("EXPIRY"));
+            rec.settleDate = extractTag(series, config.at("contract_fields").at("SETTLE_DATE"));
+            rec.volatility = safeStod(extractTag(series, config.at("contract_fields").at("VOLATILITY")));
 
-            rec.expiry = extractTag(series, "pe");
-            rec.settleDate = extractTag(series, "setlDate");
-            rec.volatility = std::stod(extractTag(series, "v"));
-            rec.intraRate = std::stod(extractTag(series, "val")); // it will find interRate as 1st appear
-            rec.priceScan = std::stod(extractTag(series, "priceScan"));
-            rec.volScan = std::stod(extractTag(series, "volScan"));
-            rec.contractId = std::stoi(extractTag(series, "cId"));
+            std::string intrBlock = extractTag(series, config.at("interest_rate").at("INTRA_RATE_PARENT"));
+            rec.intraRate = safeStod(extractTag(series, config.at("interest_rate").at("INTRA_RATE_VALUE")));
 
-            std::regex optRgx("<opt>([\\s\\S]*?)</opt>");
+            rec.priceScan = safeStod(extractTag(series, config.at("contract_fields").at("PRICE_SCAN")));
+            rec.volScan = safeStod(extractTag(series, config.at("contract_fields").at("VOL_SCAN")));
+
+            std::regex optRgx("<" + config.at("contracts").at("OOPF_OPT_TAG") + ">([\\s\\S]*?)</" + config.at("contracts").at("OOPF_OPT_TAG") + ">");
             auto optBegin = std::sregex_iterator(series.begin(), series.end(), optRgx);
             auto optEnd = std::sregex_iterator();
+
             for (auto oit = optBegin; oit != optEnd; ++oit) {
+      
                 std::string opt = (*oit)[0];
+                rec.optContractId = safeStoi(extractTag(opt, config.at("option_fields").at("OPT_CONTRACT_ID")));
+                rec.optionType = extractTag(opt, config.at("option_fields").at("OPTION_TYPE"));
+                rec.strikePrice = safeStod(extractTag(opt, config.at("option_fields").at("STRIKE_PRICE")));
+                rec.optionValue = safeStod(extractTag(opt, config.at("option_fields").at("OPTION_VALUE")));
+                rec.riskArray = extractRiskArray(opt, config);
 
-                rec.optContractId = std::stoi(extractTag(opt, "cId"));
-                rec.optionType = extractTag(opt, "o");
-                rec.strikePrice = std::stod(extractTag(opt, "k"));
-                rec.optionValue = std::stod(extractTag(opt, "val"));
-                rec.riskArray = extractRiskArray(opt);
-
+                optCounter++;
                 recs.push_back(rec);
             }
         }
     }
+
 }
 
 std::wstring joinRiskArray(RiskArray riskArray) {
@@ -371,5 +420,23 @@ void handleError(SQLSMALLINT handleType, SQLHANDLE handle, const char* functionN
         wprintf(L"[ODBC Error %d] %s%s%d: SQLSTATE=%s, NativeError=%d, Message=%s\n",
             recNumber, wstrFunctionName.c_str(), paramNumber ? L" (Parameter " : L" ", paramNumber, SQLState, nativeError, message);
         recNumber++; // Move to next record
+    }
+}
+
+double safeStod(const std::string& value, double defaultVal) {
+    try {
+        return value.empty() ? defaultVal : std::stod(value);
+    }
+    catch (...) {
+        return defaultVal;
+    }
+}
+
+int safeStoi(const std::string& value, int defaultVal) {
+    try {
+        return value.empty() ? defaultVal : std::stoi(value);
+    }
+    catch (...) {
+        return defaultVal;
     }
 }
